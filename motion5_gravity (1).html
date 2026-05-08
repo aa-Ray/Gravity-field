@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BENNU · GRAVITY FIELD</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; background:#000; overflow:hidden; }
+  canvas { display:block; width:100% !important; height:100% !important; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Motion 5: Particle Gravity Field
+// Thousands of particles float in space, pulled by the gravitational fields
+// of Bennu (left/center) and Earth (right/center).
+// As Bennu's real AU distance decreases over 109 years,
+// its gravitational influence grows, distorting the field progressively.
+// At closest approach (0.001783 AU), the particle field collapses violently.
+
+const DATA = [
+  {date:"2026-Feb-14",au:1.571402},{date:"2027-Jan-01",au:2.230766},
+  {date:"2029-Jan-01",au:1.86094},{date:"2031-Jan-01",au:0.346933},
+  {date:"2033-Jan-01",au:2.191514},{date:"2035-Jan-01",au:1.938582},
+  {date:"2037-Jan-01",au:0.18665},{date:"2039-Jan-01",au:2.151332},
+  {date:"2041-Jan-01",au:1.996342},{date:"2043-Jan-01",au:0.117722},
+  {date:"2045-Jan-01",au:2.109531},{date:"2047-Jan-01",au:2.045633},
+  {date:"2049-Jan-01",au:0.178753},{date:"2051-Jan-01",au:2.064147},
+  {date:"2053-Jan-01",au:2.087224},{date:"2055-Jan-01",au:0.289826},
+  {date:"2057-Jan-01",au:2.026484},{date:"2059-Jan-01",au:2.112345},
+  {date:"2061-Jan-01",au:0.347015},{date:"2063-Jan-01",au:1.857159},
+  {date:"2065-Jan-01",au:2.233738},{date:"2067-Jan-01",au:1.093445},
+  {date:"2069-Jan-01",au:1.301232},{date:"2071-Jan-01",au:2.286203},
+  {date:"2073-Jan-01",au:1.648703},{date:"2075-Jan-01",au:0.535609},
+  {date:"2077-Jan-01",au:2.166773},{date:"2079-Jan-01",au:2.024648},
+  {date:"2081-Jan-01",au:0.361906},{date:"2083-Jan-01",au:1.795126},
+  {date:"2085-Jan-01",au:2.255985},{date:"2087-Jan-01",au:1.303817},
+  {date:"2089-Jan-01",au:0.977573},{date:"2091-Jan-01",au:2.238721},
+  {date:"2093-Jan-01",au:1.903867},{date:"2095-Jan-01",au:0.166885},
+  {date:"2097-Jan-01",au:1.918633},{date:"2099-Jan-01",au:2.219775},
+  {date:"2101-Jan-01",au:1.094132},{date:"2103-Jan-01",au:1.238569},
+  {date:"2105-Jan-01",au:2.272467},{date:"2107-Jan-01",au:1.771857},
+  {date:"2109-Jan-01",au:0.234649},{date:"2111-Jan-01",au:2.046342},
+  {date:"2113-Jan-01",au:2.1561},{date:"2115-Jan-01",au:0.825199},
+  {date:"2117-Jan-01",au:1.497487},{date:"2119-Jan-01",au:2.287103},
+  {date:"2121-Jan-01",au:1.574719},{date:"2123-Jan-01",au:0.602307},
+  {date:"2125-Jan-01",au:2.162236},{date:"2127-Jan-01",au:2.048957},
+  {date:"2129-Jan-01",au:0.484947},{date:"2131-Jan-01",au:1.734812},
+  {date:"2133-Jan-01",au:2.268572},{date:"2135-Jan-01",au:1.354564},
+  {date:"2135-Sep-01",au:0.086408},{date:"2135-Sep-10",au:0.053537},
+  {date:"2135-Sep-20",au:0.018574},{date:"2135-Sep-23",au:0.008242},
+  {date:"2135-Sep-24",au:0.004847},{date:"2135-Sep-25",au:0.001783}
+];
+
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const dpr=window.devicePixelRatio||1;
+let W,H;
+
+function resize(){
+  const dw=window.innerWidth,dh=window.innerHeight;
+  canvas.width=dw*dpr; canvas.height=dh*dpr;
+  ctx.scale(dpr,dpr);
+  W=dw; H=dh;
+  initParticles();
+}
+window.addEventListener('resize',()=>{ ctx.resetTransform(); resize(); });
+
+// ── Data interpolation ─────────────────────────────────────────────────────
+function getAU(t){
+  const idx=t*(DATA.length-1);
+  const i0=Math.floor(idx),i1=Math.min(i0+1,DATA.length-1);
+  return DATA[i0].au+(DATA[i1].au-DATA[i0].au)*(idx-i0);
+}
+function getDate(t){ return DATA[Math.min(Math.floor(t*(DATA.length-1)),DATA.length-1)].date; }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+// ── Body positions ─────────────────────────────────────────────────────────
+// Earth: fixed at right-center
+// Bennu: moves from left side toward Earth as AU decreases
+// The separation on screen maps from max AU (~2.3 → wide gap) to min AU (→ nearly touching)
+
+// Real orbital mechanics:
+// Bennu orbits the Sun with period ~1.2 yrs, Earth with 1.0 yr.
+// Over 109.8 years, Bennu completes 8.5 synodic loops relative to Earth.
+// We use the same angle/radius math as Motion 4's helix —
+// projecting Bennu's true heliocentric XY position relative to Earth.
+// Earth stays fixed at screen center; Bennu traces its real spiral path.
+
+const TOTAL_YEARS=109.80, TOTAL_TURNS=8.5, MAX_AU=2.35;
+
+function earthPos(){ return {x:W*0.5, y:H*0.5}; }  // Earth at center
+
+function bennuPos(t){
+  // t = animation fraction 0→1
+  const yr   = t*TOTAL_YEARS;
+  const angle= (yr/TOTAL_YEARS)*TOTAL_TURNS*Math.PI*2;
+  const au   = getAU(t);
+  // Scale: max AU → reaches ~42% of screen half-size
+  const scale= Math.min(W,H)*0.40;
+  const r    = (au/MAX_AU)*scale;
+  const ep   = earthPos();
+  return {x: ep.x + r*Math.cos(angle), y: ep.y + r*Math.sin(angle)};
+}
+
+// ── Particles ─────────────────────────────────────────────────────────────
+const NUM_PARTICLES=3200;
+let particles=[];
+
+function initParticles(){
+  particles=Array.from({length:NUM_PARTICLES},()=>spawnParticle());
+}
+
+function spawnParticle(edge=false){
+  let x,y;
+  if(edge){
+    const side=Math.floor(Math.random()*4);
+    if(side===0){ x=Math.random()*W; y=-5; }
+    else if(side===1){ x=W+5; y=Math.random()*H; }
+    else if(side===2){ x=Math.random()*W; y=H+5; }
+    else { x=-5; y=Math.random()*H; }
+  } else {
+    x=Math.random()*W;
+    y=Math.random()*H;
+  }
+  return {
+    x, y,
+    vx:(Math.random()-0.5)*0.24,
+    vy:(Math.random()-0.5)*0.24,
+    life:0.3+Math.random()*0.7,
+    maxLife:0.3+Math.random()*0.7,
+    r:0.36+Math.random()*1.08,
+    base_r:0.36+Math.random()*1.08,
+    dead:false
+  };
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+const CYCLE=112500, PAUSE=5000, TOTAL=CYCLE+PAUSE;
+let startTime=null;
+let wasPausing=false, pauseAlpha=0;
+
+function draw(ts){
+  requestAnimationFrame(draw);
+  if(!startTime) startTime=ts;
+
+  const elapsed=(ts-startTime)%TOTAL;
+  const inPause=elapsed>=CYCLE;
+  const t=Math.min(elapsed/CYCLE,1);
+  const au=getAU(t);
+  const date=getDate(t);
+
+  if(inPause&&!wasPausing) wasPausing=true;
+  else if(!inPause&&wasPausing) wasPausing=false;
+  pauseAlpha=wasPausing?Math.min(pauseAlpha+0.018,1):Math.max(pauseAlpha-0.018,0);
+
+  // Body positions
+  const ep=earthPos();
+  const bp=bennuPos(t);
+
+  // How strongly Bennu distorts the field (0=far, 1=closest approach)
+  const closeFrac=clamp(1-au/2.35,0,1);
+  const crisis=clamp(1-au/0.1,0,1);  // extreme distortion only at very close (<0.1 AU)
+
+  // Body gravity strengths
+  const earthStr=18000+closeFrac*5000;
+  const bennuStr=4000+closeFrac*closeFrac*80000; // grows dramatically when close
+
+  ctx.save();
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  // Slight trail effect (not full clear) for motion blur
+  ctx.fillStyle=`rgba(0,0,0,${0.18+crisis*0.25})`;
+  ctx.fillRect(0,0,W,H);
+
+  // ── Update + draw particles ──────────────────────────────────────────────
+  let deadCount=0;
+  for(let i=0;i<particles.length;i++){
+    const p=particles[i];
+
+    // Gravity from Earth
+    const dex=ep.x-p.x, dey=ep.y-p.y;
+    const de2=dex*dex+dey*dey+400;
+    const de=Math.sqrt(de2);
+    const feScale=earthStr/de2;
+    p.vx+=dex/de*feScale;
+    p.vy+=dey/de*feScale;
+
+    // Gravity from Bennu
+    const dbx=bp.x-p.x, dby=bp.y-p.y;
+    const db2=dbx*dbx+dby*dby+300;
+    const db=Math.sqrt(db2);
+    const fbScale=bennuStr/db2;
+    p.vx+=dbx/db*fbScale;
+    p.vy+=dby/db*fbScale;
+
+    // Velocity damping + max speed
+    const speed=Math.sqrt(p.vx*p.vx+p.vy*p.vy);
+    const maxSpeed=4.8+crisis*6.4;
+    if(speed>maxSpeed){ p.vx=p.vx/speed*maxSpeed; p.vy=p.vy/speed*maxSpeed; }
+    p.vx*=0.96; p.vy*=0.96;
+
+    p.x+=p.vx; p.y+=p.vy;
+
+    // Kill particles that fall into the bodies or go off-screen
+    const tooCloseE=(dex*dex+dey*dey)<400;
+    const tooCloseB=(dbx*dbx+dby*dby)<300;
+    const offScreen=p.x<-20||p.x>W+20||p.y<-20||p.y>H+20;
+
+    if(tooCloseE||tooCloseB||offScreen){
+      particles[i]=spawnParticle(true);
+      deadCount++;
+      continue;
+    }
+
+    // Color: base white, becomes warmer near Bennu, bluer near Earth
+    const dBennu=Math.sqrt(dbx*dbx+dby*dby);
+    const dEarth=Math.sqrt(dex*dex+dey*dey);
+    const bennuInfluence=clamp(1-dBennu/300,0,1);
+    const earthInfluence=clamp(1-dEarth/350,0,1);
+
+    // Particle brightness increases with speed
+    const brightBoost=clamp(speed/maxSpeed,0,1);
+
+    const r=Math.round(255);
+    const g=Math.round(255-bennuInfluence*120+earthInfluence*0);
+    const b=Math.round(255-bennuInfluence*200+earthInfluence*30);
+    const alpha=clamp(0.15+brightBoost*0.55+bennuInfluence*0.3+earthInfluence*0.2,0,0.9);
+
+    // Dot size: larger when moving fast (pulled hard by gravity)
+    const drawR=p.base_r*(1+brightBoost*1.8+bennuInfluence*2+crisis*1.5);
+
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,drawR,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${r},${g},${b},${alpha})`;
+    ctx.fill();
+  }
+
+  // ── Earth body ──────────────────────────────────────────────────────────
+  {
+    const pulse=0.5+0.5*Math.sin(ts*0.002);
+    const eGrd=ctx.createRadialGradient(ep.x,ep.y,0,ep.x,ep.y,36);
+    eGrd.addColorStop(0,`rgba(80,160,255,${0.7+pulse*0.2})`);
+    eGrd.addColorStop(0.4,'rgba(40,100,220,0.25)');
+    eGrd.addColorStop(1,'rgba(20,60,180,0)');
+    ctx.beginPath(); ctx.arc(ep.x,ep.y,36,0,Math.PI*2); ctx.fillStyle=eGrd; ctx.fill();
+    ctx.beginPath(); ctx.arc(ep.x,ep.y,9,0,Math.PI*2);
+    ctx.fillStyle='rgba(160,220,255,0.95)'; ctx.fill();
+    ctx.font='9px Courier New'; ctx.fillStyle='rgba(140,210,255,0.6)';
+    ctx.fillText('EARTH',ep.x+13,ep.y-6);
+  }
+
+  // ── Bennu body ──────────────────────────────────────────────────────────
+  {
+    const pulse=0.5+0.5*Math.sin(ts*0.003);
+    const bSize=5+crisis*8;  // grows at approach
+    const bGlowR=22+closeFrac*20+crisis*50;
+    const bGrd=ctx.createRadialGradient(bp.x,bp.y,0,bp.x,bp.y,bGlowR);
+    if(crisis>0.05){
+      bGrd.addColorStop(0,`rgba(255,180,60,${0.8+pulse*0.18})`);
+      bGrd.addColorStop(0.4,`rgba(255,80,20,${0.2+crisis*0.4})`);
+      bGrd.addColorStop(1,'rgba(255,30,0,0)');
+    } else {
+      bGrd.addColorStop(0,`rgba(255,255,255,${0.45+pulse*0.15})`);
+      bGrd.addColorStop(0.4,'rgba(200,200,255,0.08)');
+      bGrd.addColorStop(1,'rgba(150,150,255,0)');
+    }
+    ctx.beginPath(); ctx.arc(bp.x,bp.y,bGlowR,0,Math.PI*2); ctx.fillStyle=bGrd; ctx.fill();
+    ctx.beginPath(); ctx.arc(bp.x,bp.y,bSize+pulse*1.5,0,Math.PI*2);
+    ctx.fillStyle=crisis>0.05?'rgba(255,230,120,1)':'rgba(255,255,255,1)'; ctx.fill();
+    ctx.font='9px Courier New';
+    ctx.fillStyle=crisis>0.05?'rgba(255,210,90,0.85)':'rgba(255,255,255,0.45)';
+    ctx.fillText('BENNU',bp.x+bSize+8,bp.y-5);
+  }
+
+  // ── Tension line when close ──────────────────────────────────────────────
+  if(au<0.5){
+    const tension=clamp(1-au/0.5,0,1);
+    ctx.beginPath(); ctx.moveTo(ep.x,ep.y); ctx.lineTo(bp.x,bp.y);
+    ctx.strokeStyle=`rgba(255,200,100,${tension*tension*0.6})`;
+    ctx.lineWidth=1.5; ctx.setLineDash([4,6]); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // ── HUD ────────────────────────────────────────────────────────────────
+  ctx.font='11px Courier New'; ctx.fillStyle='rgba(255,255,255,0.2)';
+  ctx.fillText('101955 BENNU · GRAVITATIONAL FIELD · 2026—2135',20,28);
+  ctx.font='9px Courier New'; ctx.fillStyle='rgba(255,255,255,0.08)';
+  ctx.fillText('particle field distorted by Bennu and Earth gravity · real Horizons AU data',20,44);
+
+  ctx.textAlign='right';
+  ctx.font='10px Courier New'; ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText(date.toUpperCase(),W-20,H-34);
+  ctx.font='14px Courier New'; ctx.fillStyle='rgba(255,255,255,0.75)';
+  ctx.fillText(au.toFixed(6)+' AU',W-20,H-16);
+  ctx.textAlign='left';
+
+  // Pause overlay
+  if(pauseAlpha>0.01){
+    ctx.fillStyle=`rgba(0,0,0,${pauseAlpha*0.7})`; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.font='10px Courier New'; ctx.fillStyle=`rgba(255,255,255,${pauseAlpha*0.4})`;
+    ctx.fillText('CLOSEST APPROACH',W/2,H/2-58);
+    ctx.font='46px Courier New'; ctx.fillStyle=`rgba(255,200,80,${pauseAlpha*0.95})`;
+    ctx.fillText('0.001783 AU',W/2,H/2+5);
+    ctx.font='11px Courier New'; ctx.fillStyle=`rgba(255,255,255,${pauseAlpha*0.5})`;
+    ctx.fillText('2135 SEP 25 · 266,711 KM',W/2,H/2+36);
+    ctx.textAlign='left';
+  }
+
+  ctx.restore();
+}
+
+resize();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
